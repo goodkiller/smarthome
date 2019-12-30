@@ -1,43 +1,41 @@
 
+var _wifi_ssid = 'IoT';
+var _wifi_password = 'IoT12345';
+
+var _web_port = 80;
+
+var _resolution = 1024;
+var _pinPressureSensor = A0;
+var _minPressureSensorVoltage = 0.107;
+var _maxPressureSensorVoltage = 0.990;
+var _maxPressureSensorPressure = 175;
+
+var _pinOneWire = NodeMCU.D7; // D13
+var _oledScreenI2C = {
+  scl: NodeMCU.D1, // D5
+  sda: NodeMCU.D2  // D4
+};
+
+var _sensorReadingTimeout = 5000;
+
+
+
+var g;
+
+
+
+
 var wifi = require('Wifi');
 var http = require('http');
 
-/*
-var ssid = 'WIFI 2.4G';
-var password = 'mywifipassword';
-*/
-var ssid = 'wifi-guests';
-var password = 'GoToInternet';
-var port = 80;
+
+console.log('a');
 
 
-var led_itr = null;
-var led_status = false;
 
-//////////////////////////////////////////
 
-// Start LED flashing
-function ledFlash(period) {
-  
-  clearInterval(led_itr);
-  
-  led_itr = setInterval(() => {
-    led_status = !led_status;
-    digitalWrite(D2, led_status);
-  }, period);
-}
 
-// Turn LED on
-function ledOn() {
-  digitalWrite(D2, led_status = true);
-  clearInterval(led_itr);
-}
 
-// Turn LED off
-function ledOff() {
-  digitalWrite(D2, led_status = false);
-  clearInterval(led_itr);
-}
 
 function wifiChecker() {
   
@@ -46,12 +44,12 @@ function wifiChecker() {
     if( wifi.getIP().ip == '0.0.0.0' )
     {
       console.log('[WiFi] disconnected');
-      ledFlash(300);
+      //ledFlash(300);
     }
     else
     {
       console.log('[WiFi] connected');
-      ledOn();
+      //ledOn();
     }
     
   }, 10000); 
@@ -64,28 +62,96 @@ function processHttpRequest(req, res) {
   res.end('Hello World');
 }
 
+// Init screen
+function _initScreen()
+{
+  I2C1.setup( _oledScreenI2C );
+  g = require("SSD1306").connect( I2C1, _startScreen );
+  
+}
+
+// Start screen
+function _startScreen(){
+  
+  require("Font8x16").add(Graphics);
+  
+  g.setFont8x16();
+  g.drawString("Ready", 2, 2);
+  g.flip();
+}
+
+// Init OneWire
+function _initOneWire()
+{
+  let ow = new OneWire( _pinOneWire );
+
+  setInterval(function(){
+
+    // Search sensors
+    let sensors = ow.search().map( device => {
+      return require("DS18B20").connect(ow, device);
+    });
+
+    // Get temperatures
+    sensors.forEach((sensor, index) => {
+      sensor.getTemp(temp => {
+        console.log( sensor.sCode + ": " + temp + "°C" );
+      });
+    });
+    
+  }, _sensorReadingTimeout );
+}
+
+// Init Pressure sensor
+function _initPressureSensor()
+{
+  setInterval(function(){
+    
+    let voltage = analogRead( _pinPressureSensor),
+        resVoltage = map(voltage, _minPressureSensorVoltage, _maxPressureSensorVoltage, 0, _resolution),
+        
+        psi = ( resVoltage / _resolution * _maxPressureSensorPressure ),
+        bar = psi * 0.0689475728,
+        
+        barRounded = Math.round(bar * 100) / 100;
+    
+
+    console.log('V:', voltage, 'RES:', resVoltage, 'PSI:', psi, 'BAR:', bar);
+    console.log('barRounded -> ', barRounded);
+    
+
+    g.clear();
+    g.drawString(barRounded + ' bar', 2, 20);
+    g.flip();
+    
+  }, _sensorReadingTimeout );
+}
+
+// Map fn
+function map( x,  in_min,  in_max,  out_min,  out_max){
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
 // OnInit
 function onInit() {
 
-  console.log('=== START ===');
-
-  
+ console.log('b');
   
   wifiChecker();
-
-  wifi.connect(ssid, {password: password}, () => {
+  
+   wifi.connect( _wifi_ssid, { password: _wifi_password }, () => {
 
     console.log('Connected to Wifi. IP address is:', wifi.getIP().ip);
-
-    http
+     
+     http
       .createServer(processHttpRequest)
-      .listen(port);
+      .listen( _web_port );
+
   });
 
   // Wifi connected
   wifi.on('connected', (details) => {
 
-    ledOn();
     console.log('[WiFi]: Connected.', details);
 
   });
@@ -93,50 +159,22 @@ function onInit() {
   // Wifi disconnected
   wifi.on('disconnected', (details) => {
 
-    ledFlash(300);
     console.log('[WiFi]: Disconnected.', details);
 
   });
-
-
-  var ow = new OneWire(D16);
-
-  setInterval(function() {
-
-    var sensors = ow.search().map( device => {
-      return require("DS18B20").connect(ow, device);
-    });
-    
-    ledFlash(20);
-    setTimeout(function () {
-      ledOn();
-    }, 1000);
-
-    sensors.forEach((sensor, index) => {
-
-      sensor.getTemp(temp => {
-        console.log( sensor.sCode + ": " + temp + "°C" );
-      });
-      
-    });
-    
-    
-
-    console.log('D33 -> ', analogReadMedian(D33, 100), ' (', analogRead(D33), ')');
-
-  }, 30000);
-
+  
+  // Init Screen
+  _initScreen();
+  
+  // Init OneWire
+  _initOneWire();
+  
+  // Init Pressure sensor
+  _initPressureSensor();
 }
 
-
-console.log('WTF 2');
-
-
-
-
-
-
-analogReadMedian = function(p, sampleCount) {
+function analogReadMedian(p, sampleCount)
+{
       var i, median;
       var samples = Math.floor(sampleCount);
       var analogValues = new Array(samples);
@@ -153,5 +191,11 @@ analogReadMedian = function(p, sampleCount) {
           median = analogValues[i];
       }
       return median;
-};
+}
 
+
+
+
+
+
+console.log('c');
