@@ -4,16 +4,18 @@ var _wifi_ssid = 'IoT';
 var _wifi_password = 'IoT12345';
 
 // WebServer
+var _web_enabled = false;
 var _web_port = 80;
 
 // InfluxDB configuration
-var influxDBParams = {
+var _influx_enabled = true;
+var _influxDBParams = {
   influxDBHost: '192.168.1.10',
   influxPort: 8086,
   influxDBName: 'zwave',
   influxUserName: 'asd',
   influxPassword: 'asd',
-  influxAgentName: getSerial()
+  influxAgentName: 'PressureSensor-' + getSerial()
 };
 
 
@@ -31,24 +33,31 @@ var _oledScreenI2C = {
   sda: NodeMCU.D2  // D4
 };
 
-var _sensorReadingTimeout = 5000;
-
-
 
 var g;
+var gPos = 0;
 var pubSensors = [];
 
 
 
 
 var wifi = require('Wifi');
-var WebServer = require("WebServer");
-var influxDB = require("InfluxDB").setup(influxDBParams);
+
+if( _influx_enabled ){
+  var influxDB = require("InfluxDB").setup( _influxDBParams );
+}
+
+if( _web_enabled ){
+  var WebServer = require("WebServer");
+}
 
 console.log('a');
 
 
-function startServer() {
+function startServer()
+{
+  if( _web_enabled )
+  {
     var webs = new WebServer({
         port: _web_port,
        // file_system: '/var/www/',
@@ -78,6 +87,7 @@ function startServer() {
     });
 
     webs.createServer();
+  }
 }
 
 function index_njs(req, res, uri, webs) {
@@ -108,37 +118,69 @@ function _wifiChecker() {
     if( wifi.getIP().ip == '0.0.0.0' )
     {
       console.log('[WiFi] disconnected');
-      //ledFlash(300);
     }
     else
     {
       console.log('[WiFi] connected');
-      //ledOn();
     }
-    
-  }, 10000); 
+
+    console.log(process.memory());
+
+  }, 10000);
 }
 
 // Init screen
 function _initScreen()
 {
   I2C1.setup( _oledScreenI2C );
-  g = require("SSD1306").connect( I2C1, _startScreen, { height : 48, width: 64 } );
+  g = require("SSD1306").connect( I2C1, _startScreen, { height : 64, width: 48 } );
   
 }
 
 // Start screen
 function _startScreen(){
+
+  require('FontDennis8').add(Graphics);
   
-require("FontDennis8").add(Graphics);
-g.setFontDennis8();
+  g.setFontDennis8();
+  g.setRotation(1,0);
+
+  console.log('Screen: ' + g.getHeight(), 'x', g.getWidth() );
+
+  setInterval(_displayScreen, 100);
+}
+
+function _displayScreen()
+{
+  let text = '',
+    ssid = wifi.getDetails().ssid,
+    memPercent = Math.ceil((process.memory().usage / process.memory().total) * 100);
   
-  console.log(g.getHeight(), g.getWidth() );
+  gPos--;
   
- g.setRotation(1,0);
+  if( ssid.length > 3 ){
+    ssid = ssid.substr(0, 3) + '. ';
+  }
+
+  g.clear();
+
+  g.drawString( ssid + ' ' + _calculateRssiSignal(), 0, 0);
+  g.drawString(wifi.getIP().ip, 0, 9);
+  g.drawString( (Math.round(pubSensors.pressure * 100) / 100) + ' BAR', 0, 20);
+  g.drawString('Mem: ' + memPercent + '%', 0, 40);
+
+  for (var s in pubSensors)
+  {
+    if( s !== 'pressure' ){
+      text += s.substr(0, 4) + ' ' + (Math.round(pubSensors[s] * 10) / 10) + "°C, ";
+    }
+  }
   
- // g.setFont8x16();
-  g.drawString("Ready", 1, 1);
+  text = text.slice(0, -2);
+
+  if (gPos < -g.stringWidth(text)) gPos=g.getWidth();
+
+  g.drawString(text, gPos, 29);
   g.flip();
 }
 
@@ -153,7 +195,7 @@ function _initOneWire()
     let sensors = ow.search().map( device => {
       return require("DS18B20").connect(ow, device);
     });
-    
+
     // Get temperatures
     sensors.forEach((sensor, index) => {
       sensor.getTemp(temp => {
@@ -161,131 +203,105 @@ function _initOneWire()
         console.log( sensor.sCode + ": " + temp + "°C" );
       });
     });
-    
-  }, _sensorReadingTimeout );
+
+  }, 10000 );
 }
 
 // Init Pressure sensor
 function _initPressureSensor()
 {
   setInterval(function(){
-    
+
     let voltage = analogRead( _pinPressureSensor),
         resVoltage = map(voltage, _minPressureSensorVoltage, _maxPressureSensorVoltage, 0, _resolution),
-        
+
         psi = ( resVoltage / _resolution * _maxPressureSensorPressure ),
         bar = psi * 0.0689475728,
-        
+
         barRounded = Math.round(bar * 1000) / 1000;
-    
+
     pubSensors.pressure = barRounded;
 
-    console.log('V:', voltage, 'RES:', resVoltage, 'PSI:', psi, 'BAR:', bar);
-    console.log('barRounded -> ', barRounded);
-    
-
-    g.clear();
-    g.drawString(barRounded + ' bar', 2, 20);
-    g.flip();
-    
-  }, _sensorReadingTimeout );
+  }, 1000 );
 }
 
 // Publish sensor info
 function _publishSensorInfo()
 {
-  setInterval(function(){
-    
-    let data = '';
-    
-     for (var s in pubSensors)
-      {
-        data += s + ', device=' + influxDBParams.influxAgentName + ', value=' + pubSensors[s] + "\n";
+  if( _influx_enabled )
+  {
+    setInterval(function(){
+
+      let data = '';
+
+      for (var s in pubSensors){
+        data += _influxDBParams.influxAgentName + ',sensor=' + s + ' value=' + pubSensors[s] + "\n";
       }
-    
-    console.log('Send data: ', data);
-    
-    try {
-     // influxDB.write( data );
-    return true;
-    } catch (e) {
-      console.log(e);
-    }
-    
-  }, 10000);
+
+      console.log('Send data: ', data);
+
+      try {
+        influxDB.write( data );
+        return true;
+      }
+      catch(e){
+        console.log(e);
+      }
+
+    }, 30000);
+  }
+}
+
+function _calculateRssiSignal()
+{
+  let rssi = wifi.getDetails().rssi,
+      sigInt = Math.ceil(map( rssi, -90, -30, 1,  7)),
+      sigText = '';
+
+  for(let i=1; i <= sigInt; i++){
+    sigText += String.fromCharCode(0x90 + i);
+  }
+
+  return sigText;
 }
 
 // Map fn
-function map( x,  in_min,  in_max,  out_min,  out_max){
+function map( x, in_min, in_max, out_min, out_max){
   return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
 // OnInit
 function onInit() {
 
- console.log('b');
-  
    wifi.connect( _wifi_ssid, { password: _wifi_password }, () => {
 
     console.log('Connected to Wifi. IP address is:', wifi.getIP().ip);
-     
+
      startServer();
 
+     // Publish sensor info
+    _publishSensorInfo();
   });
 
   // Wifi connected
   wifi.on('connected', (details) => {
-
     console.log('[WiFi]: Connected.', details);
-
   });
 
   // Wifi disconnected
   wifi.on('disconnected', (details) => {
-
     console.log('[WiFi]: Disconnected.', details);
-
   });
-  
+
   // Wifi checker
   _wifiChecker();
-  
+
   // Init Screen
   _initScreen();
-  
+
   // Init OneWire
   _initOneWire();
-  
+
   // Init Pressure sensor
   _initPressureSensor();
-  
-  // Publish sensor info
-  _publishSensorInfo();
 }
-
-function analogReadMedian(p, sampleCount)
-{
-      var i, median;
-      var samples = Math.floor(sampleCount);
-      var analogValues = new Array(samples);
-      // read analog values into array
-      i = samples;
-      while(i--) analogValues[i] = analogRead(p);
-      //sort array, smalest first and largest last
-      analogValues.sort(function(a, b){return a-b;});
-      // set median
-      i = Math.floor(samples/2);
-      if ( samples % 2 ){ //even
-          median = (analogValues[i]+analogValues[i+1])/2;
-      } else { // odd
-          median = analogValues[i];
-      }
-      return median;
-}
-
-
-
-
-
-
-console.log('c');
