@@ -17,12 +17,14 @@ class NeoPool
         if state == 1
             # Filtration ON
             tasmota.cmd("NPFiltration 1")
-            log("[QW][NeoPool] Filtration ON")
+            log("[QW][NeoPool] Filtration ON", 2)
+            tasmota.resp_cmnd_str("Filtration ON")
 
             # Wait 15 seconds, then turn mode to HEAT
             tasmota.set_timer(1000 * 15, def ()
                 tasmota.cmd("NPFiltrationmode 2")
-                log("[QW][NeoPool] Filtration mode HEAT")
+                log("[QW][NeoPool] Filtration mode HEAT", 2)
+                tasmota.resp_cmnd_str("Filtration mode HEAT")
             end)
 
         # Turn pool OFF
@@ -30,7 +32,8 @@ class NeoPool
 
             # Filtration OFF
             tasmota.cmd("NPFiltration 0")
-            log("[QW][NeoPool] Filtration OFF")
+            log("[QW][NeoPool] Filtration OFF", 2)
+            tasmota.resp_cmnd_str("Filtration OFF")
         end
     end
 end
